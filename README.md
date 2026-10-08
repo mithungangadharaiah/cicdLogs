@@ -191,4 +191,4 @@ tests/test_generator.py                   output and parsing-contract tests
 
 ## License
 
-MIT, see [LICENSE](LICENSE). Replace the copyright holder before publishing.
+MIT, see [LICENSE](LICENSE).
