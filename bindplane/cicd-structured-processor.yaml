@@ -1,0 +1,63 @@
+# Bindplane -> Processors -> Add Processor -> Custom -> Telemetry type: LOGS
+# Paste this whole block into the "Configuration" box.
+#
+# The top-level key `transform:` is REQUIRED. Without it Bindplane treats
+# `error_mode` / `log_statements` as processor names and the collector reports
+#   "Unavailable Components: processors: [log_statements,error_mode]".
+#
+# Keep the regexes in sync with tests/test_generator.py.
+transform:
+  error_mode: ignore
+  log_statements:
+    - context: log
+      statements:
+        # 1. Split "[timestamp] message" into two temporary values (cache is per log record)
+        - 'merge_maps(cache, ExtractPatterns(body, "^\\[(?P<ts>[^\\]]+)\\] ?(?P<msg>.*)$"), "upsert") where IsString(body)'
+
+        # 2. Use the timestamp written inside the log as the event time
+        - 'set(time, Time(cache["ts"], "%Y-%m-%dT%H:%M:%S.%fZ")) where cache["ts"] != nil'
+
+        # 3. Severity: ERROR > WARN > INFO
+        - 'set(severity_text, "ERROR") where IsMatch(cache["msg"], "ERROR|FAILED|FAILURE|FATAL|Exception|Error:|BackOff|ErrImagePull|^\\s+at |^Pipeline failed|│ (CRITICAL|HIGH) │")'
+        - 'set(severity_text, "WARN") where severity_text == "" and IsMatch(cache["msg"], "\\[WARNING\\]|^WARNING:")'
+        - 'set(severity_text, "INFO") where severity_text == ""'
+        - 'set(severity_number, SEVERITY_NUMBER_ERROR) where severity_text == "ERROR"'
+        - 'set(severity_number, SEVERITY_NUMBER_WARN) where severity_text == "WARN"'
+        - 'set(severity_number, SEVERITY_NUMBER_INFO) where severity_text == "INFO"'
+
+        # 4. Pipeline name and build number from the file path (present on EVERY line)
+        #    Requires "Include File Path Attribute" to be ticked on the File source.
+        - 'merge_maps(cache, ExtractPatterns(attributes["log.file.path"], "/jobs/(?P<pipeline_name>[^/]+)/builds/(?P<build_number>\\d+)/log$"), "upsert")'
+        - 'set(attributes["pipeline.name"], cache["pipeline_name"]) where cache["pipeline_name"] != nil'
+        - 'set(attributes["build.number"], Int(cache["build_number"])) where cache["build_number"] != nil'
+        - 'set(attributes["cicd.tool"], "jenkins")'
+
+        # 5. Who/what triggered the build (only on the "Started by ..." line)
+        - 'merge_maps(cache, ExtractPatterns(cache["msg"], "^Started by (?P<trigger>GitHub push by|user) (?P<author>\\S+)$"), "upsert") where IsMatch(cache["msg"], "^Started by")'
+        - 'set(attributes["pipeline.trigger"], cache["trigger"]) where cache["trigger"] != nil'
+        - 'set(attributes["git.author"], cache["author"]) where cache["author"] != nil'
+
+        # 6. Commit and branch (only on the "Checking out Revision" line)
+        - 'merge_maps(cache, ExtractPatterns(cache["msg"], "^Checking out Revision (?P<sha>[0-9a-f]{40}) \\(origin/(?P<branch>[^)]+)\\)"), "upsert") where IsMatch(cache["msg"], "^Checking out Revision")'
+        - 'set(attributes["git.commit"], cache["sha"]) where cache["sha"] != nil'
+        - 'set(attributes["git.branch"], cache["branch"]) where cache["branch"] != nil'
+
+        # 7. Commit message (only on the "Commit message:" line).
+        #    The two dots match the surrounding quote marks; avoids quote escaping inside an OTTL string.
+        - 'merge_maps(cache, ExtractPatterns(cache["msg"], "^Commit message: .(?P<commit_msg>.*).$"), "upsert") where IsMatch(cache["msg"], "^Commit message:")'
+        - 'set(attributes["git.commit_message"], cache["commit_msg"]) where cache["commit_msg"] != nil'
+
+        # 8. Stage name (only on the "[Pipeline] { (Build)" marker lines)
+        - 'merge_maps(cache, ExtractPatterns(cache["msg"], "^\\[Pipeline\\] \\{ \\((?P<stage>[^)]+)\\)"), "upsert") where IsMatch(cache["msg"], "^\\[Pipeline\\] \\{ \\(")'
+        - 'set(attributes["pipeline.stage"], cache["stage"]) where cache["stage"] != nil'
+
+        # 9. Which stage failed (only on the "Pipeline failed in stage: X" line of failed builds)
+        - 'merge_maps(cache, ExtractPatterns(cache["msg"], "^Pipeline failed in stage: (?P<failed_stage>.+)$"), "upsert") where IsMatch(cache["msg"], "^Pipeline failed in stage:")'
+        - 'set(attributes["pipeline.failed_stage"], cache["failed_stage"]) where cache["failed_stage"] != nil'
+
+        # 10. Final status (only on the "Finished:" line): SUCCESS or FAILURE
+        - 'merge_maps(cache, ExtractPatterns(cache["msg"], "^Finished: (?P<status>[A-Z]+)$"), "upsert") where IsMatch(cache["msg"], "^Finished:")'
+        - 'set(attributes["pipeline.status"], cache["status"]) where cache["status"] != nil'
+
+        # 11. LAST: replace the body with the message without the timestamp prefix
+        - 'set(body, cache["msg"]) where cache["msg"] != nil'

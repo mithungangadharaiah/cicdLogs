@@ -1,0 +1,13 @@
+# generated logs and scenario manifests
+pipeline-logs/
+_scenarios/
+*.log
+
+# python
+__pycache__/
+*.pyc
+.venv/
+
+# local environment / secrets (tokens belong in the agent config, never here)
+.env
+*.token

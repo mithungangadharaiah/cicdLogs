@@ -1,0 +1,18 @@
+[Unit]
+Description=SDLC demo pipeline log generator (background mode)
+After=network.target
+
+[Service]
+Type=simple
+# Run as an unprivileged user that owns the log directory, if you have one.
+# The log agent's service user must be able to READ the output directory.
+User=root
+WorkingDirectory=/data/CICDPipeLogs
+ExecStart=/usr/bin/python3 /data/CICDPipeLogs/pipeline_log_generator.py --base-dir /data/CICDPipeLogs/pipeline-logs --failure-rate 0.12
+Restart=always
+RestartSec=5
+# Python buffers stdout when not attached to a terminal; keep journal output live.
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
